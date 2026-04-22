@@ -1,26 +1,57 @@
-from src.cutting_stock.data import get_sample_job
-from src.cutting_stock.utils import plan_cuts_for_job
+"""
+================================================================================
+CUTTING STOCK OPTIMIZER - APPLICATION ENTRY POINT
+================================================================================
 
+This is the main entry point for the entire application. When you run:
+    python main.py
 
-def main():
-    job = get_sample_job()
-    assignments, new_pipe_count = plan_cuts_for_job(job)
+This file:
+1. Adds the src/ directory to Python's import path
+2. Imports the UI module
+3. Launches the graphical user interface
 
-    print(f"Pipes to order = {new_pipe_count}")
-    for index, pipe in enumerate(assignments, start=1):
-        if not pipe.cuts:
-            continue
-        cut_entries = ", ".join(f"{cut.id}({cut.length})" for cut in pipe.cuts)
-        source_label = "new" if pipe.source == "new" else "leftover"
-        print(
-            f"Pipe {index} ({source_label}, length {pipe.original_length}, remaining {pipe.remaining_length}): {cut_entries}"
-        )
+APPLICATION STRUCTURE:
+- main.py (this file): Entry point and imports
+- src/cutting_stock/ui.py: Complete graphical user interface
+- src/cutting_stock/models.py: Data structures (CuttingJob, PipeAssignment, etc.)
+- src/cutting_stock/utils.py: Optimization algorithm and helper functions
+- src/cutting_stock/data.py: Sample test data (deprecated, not used by UI)
 
-    print("\nJob summary:")
-    print(f"  stock pipe length: {job.stock_pipe_length}")
-    print(f"  kerf: {job.kerf}")
-    print(f"  include leftovers: {job.include_leftovers}")
+DEPENDENCIES:
+- Python 3.7+ (required)
+- tkinter: GUI framework (usually included with Python)
+- No external packages needed
+
+TO RUN:
+    python main.py
+
+This opens the Cutting Stock Optimizer window where users can:
+1. Enter stock pipe length and blade width (kerf)
+2. Add required cuts with quantities
+3. Optionally add leftover pipes to reuse
+4. Click "Compute Cutting Plan" to optimize
+5. View results and material efficiency
+6. Save/load cutting plans to CSV files
+================================================================================
+"""
+
+import sys
+
+# ADD SRC TO IMPORT PATH
+# This allows importing from src/cutting_stock/ without installing as a package
+sys.path.append('src')
+
+# IMPORT UI MODULE
+# This imports the main graphical interface
+from cutting_stock.ui import main as run_ui
 
 
 if __name__ == "__main__":
-    main()
+    # LAUNCH APPLICATION
+    # Calls the main() function from ui.py which:
+    # 1. Sets up DPI awareness on Windows
+    # 2. Creates the Tkinter root window
+    # 3. Creates the CuttingStockUI controller
+    # 4. Starts the event loop (window stays open until user closes it)
+    run_ui()
