@@ -37,10 +37,29 @@ This opens the Cutting Stock Optimizer window where users can:
 """
 
 import sys
+import os
+
+# HELPER FUNCTION FOR FILE PATHS
+# Ensures correct paths both when running normally and when packaged as an EXE
+def resource_path(relative_path: str) -> str:
+    """
+    Get absolute path to resource, works for development and PyInstaller builds.
+    """
+    try:
+        # PyInstaller creates a temporary folder and stores files there
+        base_path = sys._MEIPASS
+    except AttributeError:
+        # Normal Python execution (not bundled)
+        base_path = os.path.abspath(os.path.dirname(__file__))
+
+    return os.path.join(base_path, relative_path)
+
 
 # ADD SRC TO IMPORT PATH
 # This allows importing from src/cutting_stock/ without installing as a package
-sys.path.append('src')
+src_path = resource_path("src")
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
 # IMPORT UI MODULE
 # This imports the main graphical interface

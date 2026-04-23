@@ -1,3 +1,4 @@
+import os
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -735,48 +736,47 @@ class CuttingStockUI:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
 
+def resource_path(relative_path):
+    """
+    Get absolute path to resource, works for dev and for PyInstaller.
+    """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
 def main():
     if sys.platform == "win32":
         try:
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
+
+            # Give the app its own Windows identity so the taskbar
+            # shows your app icon instead of Python's.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Martin.CuttingStockOptimizer.1"
+            )
         except Exception:
             pass
 
     root = tk.Tk()
 
     # SET APPLICATION ICON
-    # Create a simple icon representing cutting/pipes
     try:
-        # Create a small 16x16 icon programmatically
-        icon_data = """
-        #define icon_width 16
-        #define icon_height 16
-        static unsigned char icon_bits[] = {
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        };
-        """
-        # For now, use default Tkinter icon
-        # In a real application, you'd load a proper .ico file
-        pass
-    except Exception:
-        # If icon creation fails, continue without icon
-        pass
+        ico_path = resource_path(os.path.join("assets", "CSO_icon.ico"))
+        png_path = resource_path(os.path.join("assets", "CSO_icon.png"))
+
+        if sys.platform == "win32":
+            root.iconbitmap(ico_path)
+
+        icon_image = tk.PhotoImage(file=png_path)
+        root.iconphoto(True, icon_image)
+        root._icon_image = icon_image  # keep reference alive
+
+    except Exception as e:
+        print(f"Warning: Could not load icon: {e}")
 
     app = CuttingStockUI(root)
     root.mainloop()
