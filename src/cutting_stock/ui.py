@@ -3,9 +3,18 @@ import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib import colors
+from reportlab.lib.utils import simpleSplit
 from typing import List
 from .models import CuttingJob
-from .utils import plan_cuts_for_job, calculate_efficiency, PipeAssignment
+from .utils import (
+    plan_cuts_for_job,
+    calculate_efficiency,
+    PipeAssignment,
+    build_results_summary,
+)
 
 
 class CuttingStockUI:
@@ -20,6 +29,13 @@ class CuttingStockUI:
 
         # Track which widget should receive mouse wheel scrolling
         self.active_mousewheel_widget = None
+
+        # Store the latest computed result so it can be exported to PDF
+        self.last_assignments = []
+        self.last_new_pipe_count = 0
+        self.last_efficiency = None
+        self.last_kerf = 0
+        self.last_summary_text = ""
 
         # Main tab container
         self.notebook = ttk.Notebook(root)
@@ -41,6 +57,7 @@ class CuttingStockUI:
         self.root.bind_all("<MouseWheel>", self._on_mousewheel_windows)
         self.root.bind_all("<Button-4>", self._on_mousewheel_linux)
         self.root.bind_all("<Button-5>", self._on_mousewheel_linux)
+
 
     def setup_input_tab(self):
         """
@@ -210,6 +227,18 @@ class CuttingStockUI:
         """
         self.results_tab.columnconfigure(0, weight=1)
         self.results_tab.rowconfigure(0, weight=1)
+
+        # EXPORT PDF BUTTON
+        export_button_frame = ttk.Frame(self.results_tab)
+        export_button_frame.grid(row=1, column=0, sticky="e", padx=10, pady=(0, 5))
+
+        ttk.Button(
+            export_button_frame,
+            text="Export as PDF",
+            command=self.export_results_pdf
+        ).pack(side="right")
+
+        #Output frame to hold both the text and visualization sections, with equal height
 
         output_frame = ttk.Frame(self.results_tab)
         output_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=5)
@@ -640,30 +669,16 @@ class CuttingStockUI:
             assignments, new_pipe_count = plan_cuts_for_job(job)
             efficiency = calculate_efficiency(assignments)
 
+            # Save latest result for PDF export
+            self.last_assignments = assignments
+            self.last_new_pipe_count = new_pipe_count
+            self.last_efficiency = efficiency
+            self.last_kerf = kerf
+            self.last_summary_text = build_results_summary(assignments, new_pipe_count, efficiency, kerf)
+
+            # Show text in Results tab
             self.results_text.delete(1.0, tk.END)
-            self.results_text.insert(tk.END, f"Pipes to order = {new_pipe_count}\n")
-            self.results_text.insert(tk.END, f"Efficiency = {efficiency['efficiency']:.1f}%\n\n")
-
-            for index, pipe in enumerate(assignments, start=1):
-                if not pipe.cuts:
-                    continue
-
-                cut_entries = ", ".join(f"{cut.id}({cut.length})" for cut in pipe.cuts)
-                source_label = "new" if pipe.source == "new" else "leftover"
-
-                num_cuts_performed = len(pipe.cuts) - 1 if pipe.remaining_length == 0 else len(pipe.cuts)
-                kerf_loss = num_cuts_performed * kerf
-
-                self.results_text.insert(
-                    tk.END,
-                    f"Pipe {index} ({source_label}, length {pipe.original_length}, remaining {pipe.remaining_length}): "
-                    f"{cut_entries} | Cuts: {num_cuts_performed}, Kerf loss: {kerf_loss}mm\n"
-                )
-
-            self.results_text.insert(tk.END, "\n--- Efficiency Metrics ---\n")
-            self.results_text.insert(tk.END, f"Total material: {efficiency['total_material']} mm\n")
-            self.results_text.insert(tk.END, f"Used material: {efficiency['effective_used']} mm\n")
-            self.results_text.insert(tk.END, f"Waste material: {efficiency['waste_material']} mm\n")
+            self.results_text.insert(tk.END, self.last_summary_text)
 
             self.visualize_pipes(assignments, job.kerf)
             self.notebook.select(self.results_tab)
@@ -734,6 +749,149 @@ class CuttingStockUI:
             y_offset += 50
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+
+    def export_results_pdf(self):
+        """
+        EXPORT RESULTS PDF:
+        Save the current cutting plan as a PDF with:
+        - result summary text at the top
+        - visual pipe layout below
+        """
+        if not self.last_assignments or self.last_efficiency is None:
+            messagebox.showerror("Error", "No cutting plan has been computed yet.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            initialfile="cutting_plan.pdf"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            pdf = pdf_canvas.Canvas(file_path, pagesize=A4)
+            page_width, page_height = A4
+
+            margin = 40
+            y = page_height - margin
+
+            # ===== TITLE =====
+            pdf.setFont("Helvetica-Bold", 14)
+            pdf.drawString(margin, y, "Cutting Stock Optimizer - Cutting Plan")
+            y -= 25
+
+            # ===== RESULTS TEXT =====
+            pdf.setFont("Helvetica", 10)
+            line_height = 14
+            max_text_width = page_width - (2 * margin)
+
+            for line in self.last_summary_text.splitlines():
+                # Wrap each line to fit the PDF page width
+                wrapped_lines = simpleSplit(line, "Helvetica", 10, max_text_width)
+
+                # Keep blank lines
+                if not wrapped_lines:
+                    wrapped_lines = [""]
+
+                for wrapped_line in wrapped_lines:
+                    if y < 220:
+                        pdf.showPage()
+                        y = page_height - margin
+                        pdf.setFont("Helvetica", 10)
+
+                    pdf.drawString(margin, y, wrapped_line)
+                    y -= line_height
+
+            y -= 20
+
+            # ===== VISUAL PIPE SECTION =====
+            pdf.setFont("Helvetica-Bold", 12)
+            pdf.drawString(margin, y, "Pipe Visualization")
+            y -= 20
+
+            available_width = page_width - (2 * margin)
+            colors_list = [
+                colors.red,
+                colors.blue,
+                colors.green,
+                colors.orange,
+                colors.purple,
+                colors.brown,
+                colors.pink,
+                colors.gray,
+                colors.cyan,
+                colors.magenta,
+            ]
+
+            max_pipe_length = max((pipe.original_length for pipe in self.last_assignments if pipe.cuts), default=5000)
+            scale = available_width / max(5000, max_pipe_length)
+
+            bar_height = 18
+            pipe_spacing = 38
+
+            for pipe_index, pipe in enumerate(self.last_assignments, start=1):
+                if not pipe.cuts:
+                    continue
+
+                # Start a new page if needed
+                if y < 80:
+                    pdf.showPage()
+                    y = page_height - margin
+                    pdf.setFont("Helvetica-Bold", 12)
+                    pdf.setFillColor(colors.black)
+                    pdf.drawString(margin, y, "Pipe Visualization (continued)")
+                    y -= 20
+
+                # Pipe label
+                pdf.setFont("Helvetica-Bold", 10)
+                pdf.setFillColor(colors.black)
+                pdf.drawString(margin, y, f"Pipe {pipe_index} ({pipe.source})")
+                y -= 12
+
+                pipe_x = margin
+                pipe_y = y - bar_height
+                pipe_width = pipe.original_length * scale
+
+                # Draw full pipe background
+                pdf.setStrokeColor(colors.black)
+                pdf.setFillColor(colors.lightgrey)
+                pdf.rect(pipe_x, pipe_y, pipe_width, bar_height, stroke=1, fill=1)
+
+                # Draw cut sections
+                cut_x = pipe_x
+                for i, cut in enumerate(pipe.cuts):
+                    cut_width = cut.length * scale
+                    fill_color = colors_list[i % len(colors_list)]
+
+                    pdf.setFillColor(fill_color)
+                    pdf.rect(cut_x, pipe_y, cut_width, bar_height, stroke=1, fill=1)
+
+                    # Draw cut label if there is enough room
+                    if cut_width > 45:
+                        pdf.setFillColor(colors.white)
+                        pdf.setFont("Helvetica-Bold", 8)
+                        pdf.drawCentredString(
+                            cut_x + (cut_width / 2),
+                            pipe_y + 5,
+                            f"{cut.id}({cut.length})"
+                        )
+
+                    # Move forward, including kerf spacing except after last cut
+                    if i < len(pipe.cuts) - 1:
+                        cut_x += cut_width + (self.last_kerf * scale)
+                    else:
+                        cut_x += cut_width
+
+                y -= pipe_spacing
+
+            pdf.save()
+            messagebox.showinfo("Success", f"PDF exported to:\n{file_path}")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export PDF: {e}")
 
 
 def resource_path(relative_path):

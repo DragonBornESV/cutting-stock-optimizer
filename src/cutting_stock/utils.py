@@ -525,3 +525,44 @@ def calculate_efficiency(assignments: list[PipeAssignment]) -> dict:
         "efficiency": efficiency,
     }
 
+
+def build_results_summary(
+    assignments: list[PipeAssignment],
+    new_pipe_count: int,
+    efficiency: dict,
+    kerf: int
+) -> str:
+    """
+    BUILD RESULTS SUMMARY: Create the same results text used in the UI and PDF.
+
+    This keeps the formatting in one place so both the Results tab and
+    the exported PDF show the same text.
+    """
+    lines = []
+
+    lines.append(f"Pipes to order = {new_pipe_count}")
+    lines.append(f"Efficiency = {efficiency['efficiency']:.1f}%")
+    lines.append("")
+
+    for index, pipe in enumerate(assignments, start=1):
+        if not pipe.cuts:
+            continue
+
+        cut_entries = ", ".join(f"{cut.id}({cut.length})" for cut in pipe.cuts)
+        source_label = "new" if pipe.source == "new" else "leftover"
+
+        num_cuts_performed = len(pipe.cuts) - 1 if pipe.remaining_length == 0 else len(pipe.cuts)
+        kerf_loss = num_cuts_performed * kerf
+
+        lines.append(
+            f"Pipe {index} ({source_label}, length {pipe.original_length}, remaining {pipe.remaining_length}): "
+            f"{cut_entries} | Cuts: {num_cuts_performed}, Kerf loss: {kerf_loss}mm"
+        )
+
+    lines.append("")
+    lines.append("--- Efficiency Metrics ---")
+    lines.append(f"Total material: {efficiency['total_material']} mm")
+    lines.append(f"Used material: {efficiency['effective_used']} mm")
+    lines.append(f"Waste material: {efficiency['waste_material']} mm")
+
+    return "\n".join(lines)
