@@ -1,13 +1,15 @@
 import os
 import sys
+import csv
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import csv
+from typing import List
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib import colors
 from reportlab.lib.utils import simpleSplit
-from typing import List
+
 from .models import CuttingJob
 from .utils import (
     plan_cuts_for_job,
@@ -25,7 +27,7 @@ class CuttingStockUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Cutting Stock Optimizer")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x850")
 
         # Track which widget should receive mouse wheel scrolling
         self.active_mousewheel_widget = None
@@ -37,20 +39,22 @@ class CuttingStockUI:
         self.last_kerf = 0
         self.last_summary_text = ""
 
-        # Main tab container
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        # Project information fields
+        self.title_var = tk.StringVar()
+        self.date_var = tk.StringVar()
+        self.company_var = tk.StringVar()
 
-        # Input tab
-        self.input_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.input_tab, text="Input")
+        # Main input fields
+        self.stock_len_var = tk.StringVar()
+        self.kerf_var = tk.StringVar()
+        self.include_leftovers_var = tk.BooleanVar(value=False)
 
-        # Results tab
-        self.results_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.results_tab, text="Results")
+        # Tracks whether the leftover panel is currently visible
+        self.leftovers_visible = True
 
-        self.setup_input_tab()
-        self.setup_results_tab()
+        # Build UI
+        self.setup_menu_bar()
+        self.setup_main_layout()
         self.toggle_leftovers()
 
         # Global mouse wheel binding
@@ -58,71 +62,161 @@ class CuttingStockUI:
         self.root.bind_all("<Button-4>", self._on_mousewheel_linux)
         self.root.bind_all("<Button-5>", self._on_mousewheel_linux)
 
-
-    def setup_input_tab(self):
+    def setup_menu_bar(self):
         """
-        Build the Input tab with:
-        - top buttons
-        - settings form
-        - two side-by-side panels
-        - fixed headers outside the scrollable row areas
+        Create the top dropdown menu bar.
+        """
+        menu_bar = tk.Menu(self.root)
+
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Save Plan", command=self.save_plan)
+        file_menu.add_command(label="Load Plan", command=self.load_plan)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export as PDF", command=self.export_results_pdf)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+
+        edit_menu = tk.Menu(menu_bar, tearoff=0)
+        edit_menu.add_command(label="Compute Cutting Plan", command=self.compute_plan)
+
+        view_menu = tk.Menu(menu_bar, tearoff=0)
+        view_menu.add_checkbutton(
+            label="Include Leftovers",
+            variable=self.include_leftovers_var,
+            command=self.toggle_leftovers
+        )
+
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(
+            label="About",
+            command=lambda: messagebox.showinfo(
+                "About",
+                "Cutting Stock Optimizer\nA pipe cutting optimization tool."
+            )
+        )
+
+        menu_bar.add_cascade(label="File", menu=file_menu)
+        menu_bar.add_cascade(label="Edit", menu=edit_menu)
+        menu_bar.add_cascade(label="View", menu=view_menu)
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+
+        self.root.config(menu=menu_bar)
+
+    def setup_main_layout(self):
+        """
+        Build the single-page resizable workspace.
         """
 
-        self.input_tab.columnconfigure(0, weight=1)
-        self.input_tab.rowconfigure(3, weight=1)
-
-        # ====== TOP BUTTONS ======
-        top_button_frame = ttk.Frame(self.input_tab)
-        top_button_frame.grid(row=0, column=0, sticky="w", padx=5, pady=5)
-
-        ttk.Button(top_button_frame, text="Save Plan", command=self.save_plan).pack(side="left", padx=(0, 10))
-        ttk.Button(top_button_frame, text="Load Plan", command=self.load_plan).pack(side="left", padx=(0, 10))
-        ttk.Button(top_button_frame, text="Compute Cutting Plan", command=self.compute_plan).pack(side="left")
-
-        # ====== SETTINGS ======
-        form_frame = ttk.Frame(self.input_tab)
-        form_frame.grid(row=1, column=0, sticky="w", padx=5, pady=5)
-
-        ttk.Label(form_frame, text="Stock Pipe Length:").grid(
-            row=0, column=0, sticky="e", padx=(0, 10), pady=2
+        # Main vertical splitter:
+        # Top area = settings/cuts/leftovers/results
+        # Bottom area = pipe visualization
+        self.main_paned = tk.PanedWindow(
+            self.root,
+            orient=tk.VERTICAL,
+            sashwidth=6,
+            sashrelief="raised"
         )
-        self.stock_len_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.stock_len_var, width=20).grid(
-            row=0, column=1, sticky="w", pady=2
+        self.main_paned.pack(fill="both", expand=True)
+
+        # Top horizontal splitter
+        self.top_paned = tk.PanedWindow(
+            self.main_paned,
+            orient=tk.HORIZONTAL,
+            sashwidth=6,
+            sashrelief="raised"
+        )
+        self.main_paned.add(self.top_paned, minsize=300, stretch="always")
+
+        # Bottom visualization panel
+        self.visualization_panel = ttk.LabelFrame(
+            self.main_paned,
+            text="Pipe Visualization",
+            padding=8
+        )
+        self.main_paned.add(self.visualization_panel, minsize=200, stretch="always")
+
+        # Create panels
+        self.setup_settings_panel()
+        self.setup_cuts_panel()
+        self.setup_leftovers_panel()
+        self.setup_results_panel()
+        self.setup_visualization_panel()
+
+        # Add panels to horizontal splitter
+        self.top_paned.add(self.settings_panel, minsize=260, stretch="always")
+        self.top_paned.add(self.cuts_panel, minsize=320, stretch="always")
+        self.top_paned.add(self.leftovers_panel, minsize=320, stretch="always")
+        self.top_paned.add(self.results_panel, minsize=350, stretch="always")
+
+
+    def setup_settings_panel(self):
+        """
+        Left-side settings panel with project data, pipe settings, and main action.
+        """
+        self.settings_panel = ttk.Frame(self.top_paned, padding=10)
+
+        self.settings_panel.columnconfigure(0, weight=0)
+        self.settings_panel.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            self.settings_panel,
+            text="Input Settings",
+            font=("Segoe UI", 10, "bold")
+        ).grid(row=0, column=0, columnspan=2, pady=(10, 25))
+
+        ttk.Label(self.settings_panel, text="Title:").grid(
+            row=1, column=0, sticky="e", padx=(0, 8), pady=4
+        )
+        ttk.Entry(self.settings_panel, textvariable=self.title_var).grid(
+            row=1, column=1, sticky="ew", pady=4
         )
 
-        ttk.Label(form_frame, text="Kerf:").grid(
-            row=1, column=0, sticky="e", padx=(0, 10), pady=2
+        ttk.Label(self.settings_panel, text="Date:").grid(
+            row=2, column=0, sticky="e", padx=(0, 8), pady=4
         )
-        self.kerf_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.kerf_var, width=20).grid(
-            row=1, column=1, sticky="w", pady=2
+        ttk.Entry(self.settings_panel, textvariable=self.date_var).grid(
+            row=2, column=1, sticky="ew", pady=4
         )
 
-        # ====== CHECKBOX ======
-        self.include_leftovers_var = tk.BooleanVar(value=False)
+        ttk.Label(self.settings_panel, text="Company:").grid(
+            row=3, column=0, sticky="e", padx=(0, 8), pady=4
+        )
+        ttk.Entry(self.settings_panel, textvariable=self.company_var).grid(
+            row=3, column=1, sticky="ew", pady=4
+        )
+
+        ttk.Label(self.settings_panel, text="Stock Pipe Length:").grid(
+            row=4, column=0, sticky="e", padx=(0, 8), pady=4
+        )
+        ttk.Entry(self.settings_panel, textvariable=self.stock_len_var).grid(
+            row=4, column=1, sticky="ew", pady=4
+        )
+
+        ttk.Label(self.settings_panel, text="Kerf:").grid(
+            row=5, column=0, sticky="e", padx=(0, 8), pady=4
+        )
+        ttk.Entry(self.settings_panel, textvariable=self.kerf_var).grid(
+            row=5, column=1, sticky="ew", pady=4
+        )
+
         ttk.Checkbutton(
-            self.input_tab,
+            self.settings_panel,
             text="Include Leftovers",
             variable=self.include_leftovers_var,
             command=self.toggle_leftovers
-        ).grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 30))
 
-        # ====== PANELS AREA ======
-        self.panels_frame = ttk.Frame(self.input_tab)
-        self.panels_frame.grid(row=3, column=0, sticky="nsw", padx=2, pady=5)
+        ttk.Button(
+            self.settings_panel,
+            text="Compute Cutting Plan",
+            command=self.compute_plan
+        ).grid(row=7, column=0, columnspan=2, pady=20)
 
-        # Keep panels at natural width instead of stretching them wide
-        self.panels_frame.columnconfigure(0, weight=0)
-        self.panels_frame.columnconfigure(1, weight=0)
-        self.panels_frame.rowconfigure(0, weight=1)
-
-        # =========================
-        # REQUIRED CUTS PANEL
-        # =========================
-        self.cuts_panel = ttk.Frame(self.panels_frame)
-        self.cuts_panel.grid(row=0, column=0, sticky="nsw", padx=(0, 10), pady=5)
-
+    def setup_cuts_panel(self):
+        """
+        Required cuts panel.
+        """
+        self.cuts_panel = ttk.Frame(self.top_paned, padding=8)
         self.cuts_panel.columnconfigure(0, weight=1)
         self.cuts_panel.rowconfigure(2, weight=1)
 
@@ -135,21 +229,25 @@ class CuttingStockUI:
         self.cuts_header_frame = ttk.Frame(self.cuts_panel)
         self.cuts_header_frame.grid(row=1, column=0, sticky="w", pady=(0, 5))
 
-        ttk.Label(self.cuts_header_frame, text="Label", width=18, anchor="center").grid(row=0, column=0, padx=2)
-        ttk.Label(self.cuts_header_frame, text="Length", width=12, anchor="center").grid(row=0, column=1, padx=2)
-        ttk.Label(self.cuts_header_frame, text="Quantity", width=10, anchor="center").grid(row=0, column=2, padx=2)
-        ttk.Label(self.cuts_header_frame, text="", width=10).grid(row=0, column=3, padx=2)
+        ttk.Label(self.cuts_header_frame, text="Label", width=12, anchor="center").grid(row=0, column=0, padx=2)
+        ttk.Label(self.cuts_header_frame, text="Length", width=8, anchor="center").grid(row=0, column=1, padx=2)
+        ttk.Label(self.cuts_header_frame, text="Quantity", width=8, anchor="center").grid(row=0, column=2, padx=2)
+        ttk.Label(self.cuts_header_frame, text="", width=8).grid(row=0, column=3, padx=2)
 
         self.cuts_scroll_container = ttk.Frame(self.cuts_panel, borderwidth=1, relief="solid")
-        self.cuts_scroll_container.grid(row=2, column=0, sticky="nsw")
+        self.cuts_scroll_container.grid(row=2, column=0, sticky="nsew")
 
         self.cuts_scroll_container.rowconfigure(0, weight=1)
         self.cuts_scroll_container.columnconfigure(0, weight=1)
 
-        self.cuts_canvas = tk.Canvas(self.cuts_scroll_container, highlightthickness=0, width=460)
+        self.cuts_canvas = tk.Canvas(self.cuts_scroll_container, highlightthickness=0)
         self.cuts_canvas.grid(row=0, column=0, sticky="nsew")
 
-        self.cuts_scrollbar = ttk.Scrollbar(self.cuts_scroll_container, orient="vertical", command=self.cuts_canvas.yview)
+        self.cuts_scrollbar = ttk.Scrollbar(
+            self.cuts_scroll_container,
+            orient="vertical",
+            command=self.cuts_canvas.yview
+        )
         self.cuts_scrollbar.grid(row=0, column=1, sticky="ns")
 
         self.cuts_canvas.configure(yscrollcommand=self.cuts_scrollbar.set)
@@ -167,12 +265,11 @@ class CuttingStockUI:
         self.add_cuts_row()
         self.update_cuts_add_button()
 
-        # =========================
-        # LEFTOVERS PANEL
-        # =========================
-        self.leftovers_panel = ttk.Frame(self.panels_frame)
-        self.leftovers_panel.grid(row=0, column=1, sticky="nsw", padx=(0, 10), pady=5)
-
+    def setup_leftovers_panel(self):
+        """
+        Leftover pipes panel.
+        """
+        self.leftovers_panel = ttk.Frame(self.top_paned, padding=8)
         self.leftovers_panel.columnconfigure(0, weight=1)
         self.leftovers_panel.rowconfigure(2, weight=1)
 
@@ -185,18 +282,18 @@ class CuttingStockUI:
         self.leftovers_header_frame = ttk.Frame(self.leftovers_panel)
         self.leftovers_header_frame.grid(row=1, column=0, sticky="w", pady=(0, 5))
 
-        ttk.Label(self.leftovers_header_frame, text="Label", width=18, anchor="center").grid(row=0, column=0, padx=2)
-        ttk.Label(self.leftovers_header_frame, text="Length", width=12, anchor="center").grid(row=0, column=1, padx=2)
-        ttk.Label(self.leftovers_header_frame, text="Quantity", width=10, anchor="center").grid(row=0, column=2, padx=2)
-        ttk.Label(self.leftovers_header_frame, text="", width=10).grid(row=0, column=3, padx=2)
+        ttk.Label(self.leftovers_header_frame, text="Label", width=12, anchor="center").grid(row=0, column=0, padx=2)
+        ttk.Label(self.leftovers_header_frame, text="Length", width=8, anchor="center").grid(row=0, column=1, padx=2)
+        ttk.Label(self.leftovers_header_frame, text="Quantity", width=8, anchor="center").grid(row=0, column=2, padx=2)
+        ttk.Label(self.leftovers_header_frame, text="", width=8).grid(row=0, column=3, padx=2)
 
         self.leftovers_scroll_container = ttk.Frame(self.leftovers_panel, borderwidth=1, relief="solid")
-        self.leftovers_scroll_container.grid(row=2, column=0, sticky="nsw")
+        self.leftovers_scroll_container.grid(row=2, column=0, sticky="nsew")
 
         self.leftovers_scroll_container.rowconfigure(0, weight=1)
         self.leftovers_scroll_container.columnconfigure(0, weight=1)
 
-        self.leftovers_canvas = tk.Canvas(self.leftovers_scroll_container, highlightthickness=0, width=460)
+        self.leftovers_canvas = tk.Canvas(self.leftovers_scroll_container, highlightthickness=0)
         self.leftovers_canvas.grid(row=0, column=0, sticky="nsew")
 
         self.leftovers_scrollbar = ttk.Scrollbar(
@@ -221,47 +318,16 @@ class CuttingStockUI:
         self.add_leftovers_row()
         self.update_leftovers_add_button()
 
-    def setup_results_tab(self):
+    def setup_results_panel(self):
         """
-        Build the Results tab with equal-height result areas.
+        Results text panel.
         """
-        self.results_tab.columnconfigure(0, weight=1)
-        self.results_tab.rowconfigure(0, weight=1)
-
-        # EXPORT PDF BUTTON
-        export_button_frame = ttk.Frame(self.results_tab)
-        export_button_frame.grid(row=1, column=0, sticky="e", padx=10, pady=(0, 5))
-
-        ttk.Button(
-            export_button_frame,
-            text="Export as PDF",
-            command=self.export_results_pdf
-        ).pack(side="right")
-
-        #Output frame to hold both the text and visualization sections, with equal height
-
-        output_frame = ttk.Frame(self.results_tab)
-        output_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=5)
-
-        output_frame.columnconfigure(0, weight=1)
-        output_frame.rowconfigure(0, weight=1, uniform="results")
-        output_frame.rowconfigure(1, weight=1, uniform="results")
-
-        # ====== RESULTS TEXT SECTION ======
-        results_frame = ttk.LabelFrame(output_frame, text="Results", padding=10)
-        results_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
-
-        results_frame.rowconfigure(0, weight=1)
-        results_frame.columnconfigure(0, weight=1)
-
-        text_frame = ttk.Frame(results_frame)
-        text_frame.grid(row=0, column=0, sticky="nsew")
-
-        text_frame.rowconfigure(0, weight=1)
-        text_frame.columnconfigure(0, weight=1)
+        self.results_panel = ttk.LabelFrame(self.top_paned, text="Results", padding=8)
+        self.results_panel.rowconfigure(0, weight=1)
+        self.results_panel.columnconfigure(0, weight=1)
 
         self.results_text = tk.Text(
-            text_frame,
+            self.results_panel,
             wrap="word",
             borderwidth=1,
             relief="solid",
@@ -270,37 +336,31 @@ class CuttingStockUI:
         )
         self.results_text.grid(row=0, column=0, sticky="nsew")
 
-        results_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.results_text.yview)
+        results_scroll = ttk.Scrollbar(self.results_panel, orient="vertical", command=self.results_text.yview)
         results_scroll.grid(row=0, column=1, sticky="ns")
         self.results_text.configure(yscrollcommand=results_scroll.set)
 
         self._bind_mousewheel_target(self.results_text, self.results_text)
 
-        # ====== PIPE VISUALIZATION SECTION ======
-        vis_frame = ttk.LabelFrame(output_frame, text="Pipe Visualization", padding=10)
-        vis_frame.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
-
-        vis_frame.rowconfigure(0, weight=1)
-        vis_frame.columnconfigure(0, weight=1)
-
-        canvas_frame = ttk.Frame(vis_frame)
-        canvas_frame.grid(row=0, column=0, sticky="nsew")
-
-        canvas_frame.rowconfigure(0, weight=1)
-        canvas_frame.columnconfigure(0, weight=1)
+    def setup_visualization_panel(self):
+        """
+        Bottom pipe visualization panel.
+        """
+        self.visualization_panel.rowconfigure(0, weight=1)
+        self.visualization_panel.columnconfigure(0, weight=1)
 
         self.canvas = tk.Canvas(
-            canvas_frame,
+            self.visualization_panel,
             bg="white",
             highlightthickness=0,
             height=1
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        canvas_vscroll = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
+        canvas_vscroll = ttk.Scrollbar(self.visualization_panel, orient="vertical", command=self.canvas.yview)
         canvas_vscroll.grid(row=0, column=1, sticky="ns")
 
-        canvas_hscroll = ttk.Scrollbar(vis_frame, orient="horizontal", command=self.canvas.xview)
+        canvas_hscroll = ttk.Scrollbar(self.visualization_panel, orient="horizontal", command=self.canvas.xview)
         canvas_hscroll.grid(row=1, column=0, sticky="ew")
 
         self.canvas.configure(
@@ -309,7 +369,6 @@ class CuttingStockUI:
         )
 
         self._bind_mousewheel_target(self.canvas, self.canvas)
-
 
     # =========================
     # MOUSE WHEEL SUPPORT
@@ -352,26 +411,41 @@ class CuttingStockUI:
         self.cuts_canvas.configure(scrollregion=self.cuts_canvas.bbox("all"))
 
     def on_cuts_canvas_configure(self, event):
-        self.cuts_canvas.itemconfig(self.cuts_window, width=event.width)
+        self.cuts_frame.update_idletasks()
+        required_width = self.cuts_frame.winfo_reqwidth()
+        self.cuts_canvas.itemconfig(self.cuts_window, width=max(event.width, required_width))
 
     def on_leftovers_frame_configure(self, event=None):
         self.leftovers_canvas.configure(scrollregion=self.leftovers_canvas.bbox("all"))
 
     def on_leftovers_canvas_configure(self, event):
-        self.leftovers_canvas.itemconfig(self.leftovers_window, width=event.width)
+        self.leftovers_frame.update_idletasks()
+        required_width = self.leftovers_frame.winfo_reqwidth()
+        self.leftovers_canvas.itemconfig(self.leftovers_window, width=max(event.width, required_width))
+
 
     def toggle_leftovers(self):
+        """
+        Show or hide the leftover pipes panel in the resizable workspace.
+        """
         if self.include_leftovers_var.get():
-            self.leftovers_panel.grid()
+            if not self.leftovers_visible:
+                self.top_paned.forget(self.results_panel)
+                self.top_paned.add(self.leftovers_panel, minsize=320, stretch="always")
+                self.top_paned.add(self.results_panel, minsize=350, stretch="always")
+                self.leftovers_visible = True
         else:
-            self.leftovers_panel.grid_remove()
+            if self.leftovers_visible:
+                self.top_paned.forget(self.leftovers_panel)
+                self.leftovers_visible = False
+
 
     def add_cuts_row(self):
         row_num = len(self.cuts_rows)
 
-        label_entry = ttk.Entry(self.cuts_frame, width=18)
-        length_entry = ttk.Entry(self.cuts_frame, width=12)
-        qty_entry = ttk.Entry(self.cuts_frame, width=10)
+        label_entry = ttk.Entry(self.cuts_frame, width=12)
+        length_entry = ttk.Entry(self.cuts_frame, width=8)
+        qty_entry = ttk.Entry(self.cuts_frame, width=8)
 
         delete_btn = tk.Button(
             self.cuts_frame,
@@ -396,9 +470,9 @@ class CuttingStockUI:
     def add_leftovers_row(self):
         row_num = len(self.leftovers_rows)
 
-        label_entry = ttk.Entry(self.leftovers_frame, width=18)
-        length_entry = ttk.Entry(self.leftovers_frame, width=12)
-        qty_entry = ttk.Entry(self.leftovers_frame, width=10)
+        label_entry = ttk.Entry(self.leftovers_frame, width=12)
+        length_entry = ttk.Entry(self.leftovers_frame, width=8)
+        qty_entry = ttk.Entry(self.leftovers_frame, width=8)
 
         delete_btn = tk.Button(
             self.leftovers_frame,
@@ -530,6 +604,9 @@ class CuttingStockUI:
                 writer = csv.writer(csvfile)
                 writer.writerow(["Type", "Label", "Length", "Quantity"])
 
+                writer.writerow(["Settings", "Title", self.title_var.get(), ""])
+                writer.writerow(["Settings", "Date", self.date_var.get(), ""])
+                writer.writerow(["Settings", "Company", self.company_var.get(), ""])
                 writer.writerow(["Settings", "StockPipeLength", self.stock_len_var.get(), ""])
                 writer.writerow(["Settings", "Kerf", self.kerf_var.get(), ""])
                 writer.writerow(["Settings", "IncludeLeftovers", self.include_leftovers_var.get(), ""])
@@ -561,6 +638,9 @@ class CuttingStockUI:
 
                 cuts = []
                 leftovers = []
+                title = ""
+                date = ""
+                company = ""
                 stock_len = ""
                 kerf = ""
                 include_leftovers = False
@@ -572,7 +652,13 @@ class CuttingStockUI:
                     typ, label, length_str, qty_str = row
 
                     if typ == "Settings":
-                        if label == "StockPipeLength":
+                        if label == "Title":
+                            title = length_str
+                        elif label == "Date":
+                            date = length_str
+                        elif label == "Company":
+                            company = length_str
+                        elif label == "StockPipeLength":
                             stock_len = length_str
                         elif label == "Kerf":
                             kerf = length_str
@@ -588,6 +674,9 @@ class CuttingStockUI:
                 while len(self.leftovers_rows) > 0:
                     self.remove_leftovers_row(0)
 
+                self.title_var.set(title)
+                self.date_var.set(date)
+                self.company_var.set(company)
                 self.stock_len_var.set(stock_len)
                 self.kerf_var.set(kerf)
                 self.include_leftovers_var.set(include_leftovers)
@@ -669,19 +758,16 @@ class CuttingStockUI:
             assignments, new_pipe_count = plan_cuts_for_job(job)
             efficiency = calculate_efficiency(assignments)
 
-            # Save latest result for PDF export
             self.last_assignments = assignments
             self.last_new_pipe_count = new_pipe_count
             self.last_efficiency = efficiency
             self.last_kerf = kerf
             self.last_summary_text = build_results_summary(assignments, new_pipe_count, efficiency, kerf)
 
-            # Show text in Results tab
             self.results_text.delete(1.0, tk.END)
             self.results_text.insert(tk.END, self.last_summary_text)
 
             self.visualize_pipes(assignments, job.kerf)
-            self.notebook.select(self.results_tab)
 
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -695,7 +781,7 @@ class CuttingStockUI:
         max_pipe_length = max((pipe.original_length for pipe in assignments), default=5000)
         scale = max_width / max(5000, max_pipe_length)
 
-        colors = ["red", "blue", "green", "orange", "purple", "brown", "pink", "gray", "cyan", "magenta"]
+        colors_list = ["red", "blue", "green", "orange", "purple", "brown", "pink", "gray", "cyan", "magenta"]
         font_label = ("Segoe UI", 8, "bold")
         font_pipe = ("Segoe UI", 9, "bold")
 
@@ -724,7 +810,7 @@ class CuttingStockUI:
                     if pipe.remaining_length == 0 and current_end < pipe_right:
                         cut_width += (pipe_right - current_end)
 
-                color = colors[i % len(colors)]
+                color = colors_list[i % len(colors_list)]
                 self.canvas.create_rectangle(
                     int(cut_x), y_offset,
                     int(cut_x + cut_width), y_offset + 30,
@@ -750,14 +836,7 @@ class CuttingStockUI:
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
-
     def export_results_pdf(self):
-        """
-        EXPORT RESULTS PDF:
-        Save the current cutting plan as a PDF with:
-        - result summary text at the top
-        - visual pipe layout below
-        """
         if not self.last_assignments or self.last_efficiency is None:
             messagebox.showerror("Error", "No cutting plan has been computed yet.")
             return
@@ -778,21 +857,34 @@ class CuttingStockUI:
             margin = 40
             y = page_height - margin
 
-            # ===== TITLE =====
             pdf.setFont("Helvetica-Bold", 14)
             pdf.drawString(margin, y, "Cutting Stock Optimizer - Cutting Plan")
             y -= 25
 
-            # ===== RESULTS TEXT =====
+            if self.title_var.get().strip() or self.date_var.get().strip() or self.company_var.get().strip():
+                pdf.setFont("Helvetica", 10)
+
+                if self.title_var.get().strip():
+                    pdf.drawString(margin, y, f"Title: {self.title_var.get().strip()}")
+                    y -= 14
+
+                if self.date_var.get().strip():
+                    pdf.drawString(margin, y, f"Date: {self.date_var.get().strip()}")
+                    y -= 14
+
+                if self.company_var.get().strip():
+                    pdf.drawString(margin, y, f"Company: {self.company_var.get().strip()}")
+                    y -= 14
+
+                y -= 8
+
             pdf.setFont("Helvetica", 10)
             line_height = 14
             max_text_width = page_width - (2 * margin)
 
             for line in self.last_summary_text.splitlines():
-                # Wrap each line to fit the PDF page width
                 wrapped_lines = simpleSplit(line, "Helvetica", 10, max_text_width)
 
-                # Keep blank lines
                 if not wrapped_lines:
                     wrapped_lines = [""]
 
@@ -807,13 +899,12 @@ class CuttingStockUI:
 
             y -= 20
 
-            # ===== VISUAL PIPE SECTION =====
             pdf.setFont("Helvetica-Bold", 12)
             pdf.drawString(margin, y, "Pipe Visualization")
             y -= 20
 
             available_width = page_width - (2 * margin)
-            colors_list = [
+            pdf_colors = [
                 colors.red,
                 colors.blue,
                 colors.green,
@@ -836,7 +927,6 @@ class CuttingStockUI:
                 if not pipe.cuts:
                     continue
 
-                # Start a new page if needed
                 if y < 80:
                     pdf.showPage()
                     y = page_height - margin
@@ -845,7 +935,6 @@ class CuttingStockUI:
                     pdf.drawString(margin, y, "Pipe Visualization (continued)")
                     y -= 20
 
-                # Pipe label
                 pdf.setFont("Helvetica-Bold", 10)
                 pdf.setFillColor(colors.black)
                 pdf.drawString(margin, y, f"Pipe {pipe_index} ({pipe.source})")
@@ -855,21 +944,18 @@ class CuttingStockUI:
                 pipe_y = y - bar_height
                 pipe_width = pipe.original_length * scale
 
-                # Draw full pipe background
                 pdf.setStrokeColor(colors.black)
                 pdf.setFillColor(colors.lightgrey)
                 pdf.rect(pipe_x, pipe_y, pipe_width, bar_height, stroke=1, fill=1)
 
-                # Draw cut sections
                 cut_x = pipe_x
                 for i, cut in enumerate(pipe.cuts):
                     cut_width = cut.length * scale
-                    fill_color = colors_list[i % len(colors_list)]
+                    fill_color = pdf_colors[i % len(pdf_colors)]
 
                     pdf.setFillColor(fill_color)
                     pdf.rect(cut_x, pipe_y, cut_width, bar_height, stroke=1, fill=1)
 
-                    # Draw cut label if there is enough room
                     if cut_width > 45:
                         pdf.setFillColor(colors.white)
                         pdf.setFont("Helvetica-Bold", 8)
@@ -879,7 +965,6 @@ class CuttingStockUI:
                             f"{cut.id}({cut.length})"
                         )
 
-                    # Move forward, including kerf spacing except after last cut
                     if i < len(pipe.cuts) - 1:
                         cut_x += cut_width + (self.last_kerf * scale)
                     else:
@@ -911,8 +996,6 @@ def main():
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
 
-            # Give the app its own Windows identity so the taskbar
-            # shows your app icon instead of Python's.
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "Martin.CuttingStockOptimizer.1"
             )
@@ -921,7 +1004,6 @@ def main():
 
     root = tk.Tk()
 
-    # SET APPLICATION ICON
     try:
         ico_path = resource_path(os.path.join("assets", "CSO_icon.ico"))
         png_path = resource_path(os.path.join("assets", "CSO_icon.png"))
@@ -931,7 +1013,7 @@ def main():
 
         icon_image = tk.PhotoImage(file=png_path)
         root.iconphoto(True, icon_image)
-        root._icon_image = icon_image  # keep reference alive
+        root._icon_image = icon_image
 
     except Exception as e:
         print(f"Warning: Could not load icon: {e}")
