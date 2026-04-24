@@ -142,11 +142,13 @@ class CuttingStockUI:
         self.setup_results_panel()
         self.setup_visualization_panel()
 
-        # Add panels to horizontal splitter
-        self.top_paned.add(self.settings_panel, minsize=260, stretch="always")
-        self.top_paned.add(self.cuts_panel, minsize=320, stretch="always")
-        self.top_paned.add(self.leftovers_panel, minsize=320, stretch="always")
-        self.top_paned.add(self.results_panel, minsize=350, stretch="always")
+        # Fixed/natural-width panels on the left
+        self.top_paned.add(self.settings_panel, minsize=260, width=300, stretch="never")
+        self.top_paned.add(self.cuts_panel, minsize=360, width=390, stretch="never")
+        self.top_paned.add(self.leftovers_panel, minsize=360, width=390, stretch="never")
+
+        # Results panel gets the remaining space and expands with the window
+        self.top_paned.add(self.results_panel, minsize=400, stretch="always")
 
 
     def setup_settings_panel(self):
@@ -431,8 +433,8 @@ class CuttingStockUI:
         if self.include_leftovers_var.get():
             if not self.leftovers_visible:
                 self.top_paned.forget(self.results_panel)
-                self.top_paned.add(self.leftovers_panel, minsize=320, stretch="always")
-                self.top_paned.add(self.results_panel, minsize=350, stretch="always")
+                self.top_paned.add(self.leftovers_panel, minsize=360, width=390, stretch="never")
+                self.top_paned.add(self.results_panel, minsize=400, stretch="always")
                 self.leftovers_visible = True
         else:
             if self.leftovers_visible:
