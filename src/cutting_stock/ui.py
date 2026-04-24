@@ -696,6 +696,17 @@ class CuttingStockUI:
                     row[1].insert(0, str(length))
                     row[2].insert(0, str(qty))
 
+            # Clear old computed result because the loaded input may not match it
+            self.last_assignments = []
+            self.last_new_pipe_count = 0
+            self.last_efficiency = None
+            self.last_kerf = 0
+            self.last_summary_text = ""
+
+            self.results_text.delete(1.0, tk.END)
+            self.canvas.delete("all")
+            self.canvas.configure(scrollregion=(0, 0, 0, 0))
+
             messagebox.showinfo("Success", f"Plan loaded from {file_path}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load plan: {e}")
