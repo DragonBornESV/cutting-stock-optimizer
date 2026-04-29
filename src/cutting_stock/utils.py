@@ -255,7 +255,13 @@ def create_pipe_assignment(pipe_id: str, original_length: int, source: str) -> P
     return PipeAssignment(id=pipe_id, source=source, original_length=original_length)
 
 
-def find_best_combination(available_cuts: list[CutPiece], pipe_length: int, kerf: int) -> tuple[list[CutPiece], int]:
+def find_best_combination(
+        available_cuts: list[CutPiece],
+        pipe_length: int,
+        kerf: int,
+        use_minimum_remainder: bool = False,
+        minimum_remainder: int = 0
+    ) -> tuple[list[CutPiece], int]:
     """
     FIND BEST COMBINATION: Determine optimal cuts for one pipe.
     
@@ -295,68 +301,77 @@ def find_best_combination(available_cuts: list[CutPiece], pipe_length: int, kerf
     best_cuts: list[CutPiece] = []
     best_remainder = pipe_length
     
-    # RECURSIVE HELPER: Try different combinations of cuts
+    def is_valid_remainder(raw_remainder: int) -> bool:
+        if not use_minimum_remainder:
+            return raw_remainder >= 0
+
+        if raw_remainder == 0:
+            return True
+
+        # If there is leftover material, finalizing the pipe will consume
+        # one extra kerf to separate the usable remainder.
+        final_remainder = raw_remainder - kerf
+
+        return final_remainder >= minimum_remainder
+
     def try_combinations(remaining_cuts: list[CutPiece], current_combo: list[CutPiece], used_length: int) -> None:
         nonlocal best_cuts, best_remainder
-        
-        # CALCULATE ACTUAL USED LENGTH (including kerfs)
+
         actual_used = used_length
         if len(current_combo) > 1:
-            # If multiple cuts: kerf count = number of cuts - 1
             actual_used += (len(current_combo) - 1) * kerf
-        
+
         remainder = pipe_length - actual_used
-        
-        # EVALUATE THIS COMBINATION: Is it better than current best?
-        is_better = False
-        if best_remainder > 0 and remainder == 0:
-            # Found perfect fit (zero remainder) - always best
-            is_better = True
-        elif remainder >= 0:
-            # Combination fits in pipe
-            if best_remainder == 0 and remainder == 0:
-                # Both are perfect fit: prefer more cuts (better utilization)
-                is_better = len(current_combo) > len(best_cuts)
-            elif best_remainder > 0 and remainder > 0:
-                # Both have remainder: prefer smaller remainder, or more cuts if same remainder
-                is_better = remainder < best_remainder or (remainder == best_remainder and len(current_combo) > len(best_cuts))
-            elif best_remainder > 0:
-                # Current is fit, best is not: current is better
-                is_better = used_length > sum(cut.length for cut in best_cuts)
-        
-        if is_better:
-            best_cuts = current_combo.copy()
-            best_remainder = remainder
-        
-        # PRUNE SEARCH: Stop if we found perfect fit (can't do better)
+
+        if remainder < 0:
+            return
+
+        if not is_valid_remainder(remainder):
+            pass
+        else:
+            is_better = False
+
+            if best_remainder > 0 and remainder == 0:
+                is_better = True
+            elif remainder >= 0:
+                if best_remainder == 0 and remainder == 0:
+                    is_better = len(current_combo) > len(best_cuts)
+                elif best_remainder > 0 and remainder > 0:
+                    is_better = (
+                        remainder < best_remainder
+                        or (remainder == best_remainder and len(current_combo) > len(best_cuts))
+                    )
+                elif best_remainder > 0:
+                    is_better = used_length > sum(cut.length for cut in best_cuts)
+
+            if is_better:
+                best_cuts = current_combo.copy()
+                best_remainder = remainder
+
         if best_remainder == 0:
             return
-        
-        # TRY ADDING EACH REMAINING CUT
+
         for i, cut in enumerate(remaining_cuts):
             new_used = used_length + cut.length
-            # Calculate kerf needed if we add this cut
             new_kerf = (len(current_combo) * kerf) if len(current_combo) > 0 else 0
-            
-            # Only try if it fits
+
             if new_used + new_kerf <= pipe_length:
                 new_combo = current_combo + [cut]
-                # Remaining cuts: all except the one we're using
-                new_remaining = remaining_cuts[:i] + remaining_cuts[i+1:]
-                # Recurse: try more cuts
+                new_remaining = remaining_cuts[:i] + remaining_cuts[i + 1:]
                 try_combinations(new_remaining, new_combo, new_used)
-    
-    # Start recursive search with empty combination
+
     try_combinations(available_cuts, [], 0)
     return best_cuts, best_remainder
 
 
 def assign_cuts_to_pipes(
-    cuts: list[CutPiece],
-    existing_pipes: List[Tuple[str, int]],
-    stock_pipe_length: int,
-    kerf: int,
-) -> list[PipeAssignment]:
+        cuts: list[CutPiece],
+        existing_pipes: List[Tuple[str, int]],
+        stock_pipe_length: int,
+        kerf: int,
+        use_minimum_remainder: bool = False,
+        minimum_remainder: int = 0,
+    ) -> list[PipeAssignment]:
     """
     ASSIGN CUTS TO PIPES: Run the main optimization algorithm.
     
@@ -403,7 +418,13 @@ def assign_cuts_to_pipes(
         if not remaining_cuts:
             break
         # Find best combination of remaining cuts that fit in this pipe
-        best_cuts, _ = find_best_combination(remaining_cuts, pipe.original_length, kerf)
+        best_cuts, _ = find_best_combination(
+            remaining_cuts,
+            pipe.original_length,
+            kerf,
+            use_minimum_remainder,
+            minimum_remainder
+        )
         # Assign the best cuts to this pipe
         for cut in best_cuts:
             add_cut_to_pipe(pipe, cut, kerf)
@@ -418,7 +439,19 @@ def assign_cuts_to_pipes(
         assignments.append(new_pipe)
         
         # Find best combination for this new pipe
-        best_cuts, _ = find_best_combination(remaining_cuts, stock_pipe_length, kerf)
+        best_cuts, _ = find_best_combination(
+            remaining_cuts,
+            stock_pipe_length,
+            kerf,
+            use_minimum_remainder,
+            minimum_remainder
+        )
+
+        if not best_cuts:
+            raise ValueError(
+                "No valid cutting combination found with the current minimum remainder setting. "
+                "Try lowering the minimum remainder value."
+            )
         # Assign cuts
         for cut in best_cuts:
             add_cut_to_pipe(new_pipe, cut, kerf)
@@ -429,7 +462,11 @@ def assign_cuts_to_pipes(
     return assignments
 
 
-def plan_cuts_for_job(job: "CuttingJob") -> tuple[list[PipeAssignment], int]:
+def plan_cuts_for_job(
+        job: "CuttingJob",
+        use_minimum_remainder: bool = False,
+        minimum_remainder: int = 0
+    ) -> tuple[list[PipeAssignment], int]:
     """
     PLAN CUTS FOR JOB: Main entry point for optimization.
     
@@ -459,7 +496,14 @@ def plan_cuts_for_job(job: "CuttingJob") -> tuple[list[PipeAssignment], int]:
     initial_pipes = get_initial_pipes(leftovers, job.include_leftovers)
     
     # Run the optimization algorithm
-    assignments = assign_cuts_to_pipes(cuts, initial_pipes, job.stock_pipe_length, job.kerf)
+    assignments = assign_cuts_to_pipes(
+        cuts,
+        initial_pipes,
+        job.stock_pipe_length,
+        job.kerf,
+        use_minimum_remainder,
+        minimum_remainder
+    )
     
     # Count new pipes (for ordering)
     new_pipes = [pipe for pipe in assignments if pipe.source == "new"]
@@ -526,6 +570,102 @@ def calculate_efficiency(assignments: list[PipeAssignment]) -> dict:
     }
 
 
+def calculate_lost_material(
+    assignments: list[PipeAssignment],
+    kerf: int,
+    include_minimum_usable_length: bool = False,
+    minimum_usable_length: int = 0,
+    include_kerf_loss: bool = False
+) -> dict:
+    """
+    CALCULATE LOST MATERIAL:
+    Calculates selected material losses based on user settings.
+
+    Loss can include:
+    1. Kerf loss:
+       Material lost to saw/blade width during cuts.
+
+    2. Unusable remainder:
+       Remaining pipe pieces that are smaller than the minimum usable length.
+    """
+
+    kerf_loss_total = 0
+    unusable_remainder_total = 0
+
+    for pipe in assignments:
+        if not pipe.cuts:
+            continue
+
+        # ===== KERF LOSS =====
+        # If pipe has no remaining material, there is no final cut-off kerf.
+        # If pipe has remaining material, one extra kerf was used to separate the remainder.
+        if pipe.remaining_length == 0:
+            cuts_performed = len(pipe.cuts) - 1
+        else:
+            cuts_performed = len(pipe.cuts)
+
+        pipe_kerf_loss = cuts_performed * kerf
+
+        if include_kerf_loss:
+            kerf_loss_total += pipe_kerf_loss
+
+        # ===== UNUSABLE REMAINDER =====
+        # Only count remainder as lost if it is smaller than the user's minimum usable length.
+        if include_minimum_usable_length:
+            if 0 < pipe.remaining_length < minimum_usable_length:
+                unusable_remainder_total += pipe.remaining_length
+
+    total_lost_material = kerf_loss_total + unusable_remainder_total
+
+    return {
+        "kerf_loss": kerf_loss_total,
+        "unusable_remainder": unusable_remainder_total,
+        "total_lost_material": total_lost_material,
+    }
+
+
+def group_identical_pipe_assignments(assignments: list[PipeAssignment]) -> list[tuple[PipeAssignment, int]]:
+    """
+    GROUP IDENTICAL PIPE ASSIGNMENTS:
+    Groups pipes that have the same source, original length, remaining length,
+    and identical cut sequence.
+
+    This is only for display. It does not change calculations.
+    """
+    grouped = []
+
+    for pipe in assignments:
+        if not pipe.cuts:
+            continue
+
+        pipe_signature = (
+            pipe.source,
+            pipe.original_length,
+            pipe.remaining_length,
+            tuple((cut.id, cut.length) for cut in pipe.cuts)
+        )
+
+        found_match = False
+
+        for index, (existing_pipe, count) in enumerate(grouped):
+            existing_signature = (
+                existing_pipe.source,
+                existing_pipe.original_length,
+                existing_pipe.remaining_length,
+                tuple((cut.id, cut.length) for cut in existing_pipe.cuts)
+            )
+
+            if pipe_signature == existing_signature:
+                grouped[index] = (existing_pipe, count + 1)
+                found_match = True
+                break
+
+        if not found_match:
+            grouped.append((pipe, 1))
+
+    return grouped
+
+
 def build_results_summary(
     assignments: list[PipeAssignment],
     new_pipe_count: int,
@@ -544,9 +684,11 @@ def build_results_summary(
     lines.append(f"Efficiency = {efficiency['efficiency']:.1f}%")
     lines.append("")
 
-    for index, pipe in enumerate(assignments, start=1):
-        if not pipe.cuts:
-            continue
+    #
+    grouped_pipes = group_identical_pipe_assignments(assignments)
+
+    for index, (pipe, count) in enumerate(grouped_pipes, start=1):
+    #
 
         cut_entries = ", ".join(f"{cut.id}({cut.length})" for cut in pipe.cuts)
         source_label = "new" if pipe.source == "new" else "leftover"
@@ -555,7 +697,7 @@ def build_results_summary(
         kerf_loss = num_cuts_performed * kerf
 
         lines.append(
-            f"Pipe {index} ({source_label}, length {pipe.original_length}, remaining {pipe.remaining_length}): "
+            f"Pipe {index} x{count} ({source_label}, length {pipe.original_length}, remaining {pipe.remaining_length}): "
             f"{cut_entries} | Cuts: {num_cuts_performed}, Kerf loss: {kerf_loss}mm"
         )
 
