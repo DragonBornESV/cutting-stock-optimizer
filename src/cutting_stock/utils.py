@@ -673,10 +673,9 @@ def build_results_summary(
     kerf: int
 ) -> str:
     """
-    BUILD RESULTS SUMMARY: Create the same results text used in the UI and PDF.
-
-    This keeps the formatting in one place so both the Results tab and
-    the exported PDF show the same text.
+    BUILD RESULTS SUMMARY:
+    Creates user-friendly grouped result text.
+    Identical pipe cutting plans are shown once with an occurrence count.
     """
     lines = []
 
@@ -684,24 +683,31 @@ def build_results_summary(
     lines.append(f"Efficiency = {efficiency['efficiency']:.1f}%")
     lines.append("")
 
-    #
     grouped_pipes = group_identical_pipe_assignments(assignments)
 
     for index, (pipe, count) in enumerate(grouped_pipes, start=1):
-    #
-
-        cut_entries = ", ".join(f"{cut.id}({cut.length})" for cut in pipe.cuts)
-        source_label = "new" if pipe.source == "new" else "leftover"
-
         num_cuts_performed = len(pipe.cuts) - 1 if pipe.remaining_length == 0 else len(pipe.cuts)
         kerf_loss = num_cuts_performed * kerf
 
-        lines.append(
-            f"Pipe {index} x{count} ({source_label}, length {pipe.original_length}, remaining {pipe.remaining_length}): "
-            f"{cut_entries} | Cuts: {num_cuts_performed}, Kerf loss: {kerf_loss}mm"
+        if pipe.source == "leftover":
+            title = f"Leftover pipe cutting plan {index}, Occurrence {count}"
+        else:
+            title = f"Pipe cutting plan {index}, Occurrence {count}"
+
+        segment_entries = " | ".join(
+            f"{cut.id} ({cut.length} mm)" for cut in pipe.cuts
         )
 
-    lines.append("")
+        lines.append(title)
+        lines.append(
+            f"Pipe Length: {pipe.original_length} mm, "
+            f"Number of cuts: {num_cuts_performed}, "
+            f"Kerf loss: {kerf_loss} mm, "
+            f"Remaining length: {pipe.remaining_length} mm"
+        )
+        lines.append(segment_entries)
+        lines.append("")
+
     lines.append("--- Efficiency Metrics ---")
     lines.append(f"Total material: {efficiency['total_material']} mm")
     lines.append(f"Used material: {efficiency['effective_used']} mm")

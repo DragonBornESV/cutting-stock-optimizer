@@ -39,6 +39,8 @@ class CuttingStockUI:
         # Track currently loaded/saved CSV file
         self.current_file_path = None
 
+        self.is_dirty = False  # Tracks whether there are unsaved changes
+
         # Hidden save-file metadata dates
         self.creation_date = ""
         self.last_edit_date = ""
@@ -86,6 +88,12 @@ class CuttingStockUI:
         self.root.bind_all("<Button-4>", self._on_mousewheel_linux)
         self.root.bind_all("<Button-5>", self._on_mousewheel_linux)
 
+        # Keyboard shortcuts
+        self.root.bind_all("<Control-s>", lambda event: self.save_plan())
+        self.root.bind_all("<Control-S>", lambda event: self.new_save_plan())
+        self.root.bind_all("<Control-n>", lambda event: self.new_plan())
+        self.root.bind_all("<Control-o>", lambda event: self.load_plan())
+
     def setup_menu_bar(self):
         """
         Create the top dropdown menu bar.
@@ -93,9 +101,11 @@ class CuttingStockUI:
         menu_bar = tk.Menu(self.root)
 
         file_menu = tk.Menu(menu_bar, tearoff=0)
-        file_menu.add_command(label="New Save", command=self.new_save_plan)
-        file_menu.add_command(label="Save Plan", command=self.save_plan)
-        file_menu.add_command(label="Load Plan", command=self.load_plan)
+        file_menu.add_command(label="New Plan", command=self.new_plan, accelerator="Ctrl+N")
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Plan", command=self.save_plan, accelerator="Ctrl+S")
+        file_menu.add_command(label="Save As", command=self.new_save_plan, accelerator="Ctrl+Shift+S")
+        file_menu.add_command(label="Open Plan", command=self.load_plan, accelerator="Ctrl+O")
         file_menu.add_separator()
         file_menu.add_command(label="Export as PDF", command=self.export_results_pdf)
         file_menu.add_separator()
@@ -768,6 +778,70 @@ class CuttingStockUI:
 
         return f"{today}_cutting_plan.csv"
 
+
+    def new_plan(self):
+        """
+        Clear the current workspace and return the app to a fresh startup state.
+        If there is an open/edited plan, ask whether to save first.
+        """
+        if self.is_dirty or self.current_file_path:
+            answer = messagebox.askyesnocancel(
+                "New Plan",
+                "Do you want to save the current plan before creating a new one?"
+            )
+
+            if answer is None:
+                return
+
+            if answer is True:
+                self.save_plan()
+
+        self.current_file_path = None
+        self.creation_date = ""
+        self.last_edit_date = ""
+
+        self.title_var.set("")
+        self.customer_var.set("")
+        self.notes_var.set("")
+        self.stock_len_var.set("")
+        self.kerf_var.set("")
+
+        self.include_leftovers_var.set(False)
+        self.use_min_remainder_var.set(False)
+        self.min_remainder_var.set("")
+
+        self.calculate_lost_material_var.set(False)
+        self.include_min_usable_length_var.set(False)
+        self.min_usable_length_var.set("")
+        self.include_kerf_loss_var.set(False)
+
+        while len(self.cuts_rows) > 0:
+            self.remove_cuts_row(0)
+
+        while len(self.leftovers_rows) > 0:
+            self.remove_leftovers_row(0)
+
+        self.add_cuts_row()
+        self.add_leftovers_row()
+
+        self.toggle_leftovers()
+        self.toggle_min_remainder()
+        self.toggle_lost_material_options()
+        self.toggle_min_usable_length()
+
+        self.last_assignments = []
+        self.last_new_pipe_count = 0
+        self.last_efficiency = None
+        self.last_kerf = 0
+        self.last_summary_text = ""
+
+        self.results_text.delete(1.0, tk.END)
+        self.canvas.delete("all")
+        self.canvas.configure(scrollregion=(0, 0, 0, 0))
+
+        self.is_dirty = False
+
+
     def new_save_plan(self):
         file_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -808,7 +882,7 @@ class CuttingStockUI:
         self.last_edit_date = today
 
         leftovers = self.parse_grid_input(self.leftovers_rows, "Left Over") if self.include_leftovers_var.get() else []
-        cuts = self.parse_grid_input(self.cuts_rows, "cut")
+        cuts = self.parse_grid_input(self.cuts_rows, "SEG")
 
         with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
@@ -845,6 +919,8 @@ class CuttingStockUI:
                 writer.writerow([qty, length, label])
 
         self.current_file_path = file_path
+        self.is_dirty = False
+
 
     def load_plan(self):
         file_path = filedialog.askopenfilename(
@@ -986,6 +1062,8 @@ class CuttingStockUI:
             self.canvas.delete("all")
             self.canvas.configure(scrollregion=(0, 0, 0, 0))
 
+            self.is_dirty = False
+
             messagebox.showinfo("Success", f"Plan loaded from {file_path}")
 
         except Exception as e:
@@ -1012,7 +1090,7 @@ class CuttingStockUI:
                 qty = int(qty_str) if qty_str else 1
 
                 if label == "":
-                    label = f"{default_prefix} {label_counter:02d}"
+                    label = f"{default_prefix}_{label_counter:02d}"
                     label_counter += 1
 
                 result.append((label, length, qty))
@@ -1023,7 +1101,7 @@ class CuttingStockUI:
 
     def compute_plan(self):
         try:
-            cut_req = self.parse_grid_input(self.cuts_rows, "cut")
+            cut_req = self.parse_grid_input(self.cuts_rows, "SEG")
             leftovers = []
             if self.include_leftovers_var.get():
                 leftovers = self.parse_grid_input(self.leftovers_rows, "Left Over")
